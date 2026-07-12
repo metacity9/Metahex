@@ -1,7 +1,7 @@
 """
 ========================================================================
 Project:     Meta Hex Editor
-Version:     1.2
+Version:     1.3
 Website:     https://tool.metacode9.com/
 Author:      metacode9
 Description: A high-performance, virtual-scrolling Hex Editor 
@@ -40,13 +40,16 @@ import json
 class AdvancedHexEditor:
     def __init__(self, root):
         self.root = root
-        self.root.title("Meta Hex Editor v1.2")
+        self.root.title("Meta Hex Editor v1.3")
         self.root.geometry("1200x780")
         
         # 코어 데이터 구조
         self.memory = {} 
         self.selected_cells = set()  
         self.drag_start = None
+        self.cursor_pos = None
+        self._coords_need_update = True
+        self._last_rendered_row_count = 0
         
         # Undo/Redo 스택
         self.undo_stack = []
@@ -298,6 +301,15 @@ class AdvancedHexEditor:
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.canvas.bind("<Button-4>", self.on_mouse_wheel)
         self.canvas.bind("<Button-5>", self.on_mouse_wheel)
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
+        self.canvas.bind("<Up>", self.handle_arrow_key)
+        self.canvas.bind("<Down>", self.handle_arrow_key)
+        self.canvas.bind("<Left>", self.handle_arrow_key)
+        self.canvas.bind("<Right>", self.handle_arrow_key)
+        self.canvas.bind("<Shift-Up>", self.handle_arrow_key)
+        self.canvas.bind("<Shift-Down>", self.handle_arrow_key)
+        self.canvas.bind("<Shift-Left>", self.handle_arrow_key)
+        self.canvas.bind("<Shift-Right>", self.handle_arrow_key)
         
         self.sb_canvas.bind("<Button-1>", self.on_sb_click)
         self.sb_canvas.bind("<B1-Motion>", self.on_sb_drag)
@@ -341,6 +353,8 @@ class AdvancedHexEditor:
     def clear_memory(self):
         self.memory = {}
         self.selected_cells.clear()
+        self.drag_start = None
+        self.cursor_pos = None
         self.undo_stack.clear() 
         self.row_count = 0
         self.top_visible_row = 0
@@ -475,6 +489,7 @@ class AdvancedHexEditor:
             
         current_rows = len(self.grid_rows)
         if needed_rows > current_rows:
+            self._coords_need_update = True
             for r_offset in range(current_rows, needed_rows):
                 addr_rect = self.canvas.create_rectangle(0, 0, 0, 0, fill=self.bg_color, outline=self.grid_line)
                 addr_text = self.canvas.create_text(0, 0, fill=self.accent_color, font=("Consolas", 10))
@@ -492,7 +507,7 @@ class AdvancedHexEditor:
                     'cell_texts': cell_texts
                 })
 
-    def redraw_grid(self):
+    def redraw_grid(self, force_coords=False):
         if not self.memory:
             self.canvas.delete("all")
             if hasattr(self, 'grid_header_rect'):
@@ -500,6 +515,7 @@ class AdvancedHexEditor:
                 delattr(self, 'grid_rows')
             self.canvas.create_text(200, 50, text="No data loaded. Please use Loading Area.", fill=self.fg_color, font=("Consolas", 11), anchor="w")
             self.sb_canvas.delete("all")
+            self._last_rendered_row_count = 0
             return
 
         self.min_address = (min(self.memory.keys()) // 16) * 16
@@ -513,64 +529,80 @@ class AdvancedHexEditor:
         # Lazy create grid items
         self.lazy_create_grid(self.visible_rows_count + 1)
         
+        need_coords = force_coords or getattr(self, '_coords_need_update', False)
+        self._coords_need_update = False
+        
         # Update header coordinates
-        self.canvas.coords(self.grid_header_rect, 0, 0, self.addr_width + (self.cell_width * 16), self.header_height)
+        if need_coords:
+            self.canvas.coords(self.grid_header_rect, 0, 0, self.addr_width + (self.cell_width * 16), self.header_height)
         self.canvas.itemconfig(self.grid_header_rect, fill=self.bg_color, outline=self.grid_line, state=tk.NORMAL)
         
-        self.canvas.coords(self.grid_header_addr_text, self.addr_width // 2, self.header_height // 2)
+        if need_coords:
+            self.canvas.coords(self.grid_header_addr_text, self.addr_width // 2, self.header_height // 2)
         self.canvas.itemconfig(self.grid_header_addr_text, state=tk.NORMAL)
         
         for col in range(16):
             x = self.addr_width + (col * self.cell_width)
             t_id = self.grid_header_col_texts[col]
-            self.canvas.coords(t_id, x + self.cell_width // 2, self.header_height // 2)
+            if need_coords:
+                self.canvas.coords(t_id, x + self.cell_width // 2, self.header_height // 2)
             self.canvas.itemconfig(t_id, state=tk.NORMAL)
             
         start_row = max(0, self.top_visible_row)
+        visible_rows_to_render = min(self.row_count - start_row, self.visible_rows_count)
         
-        for r_offset in range(len(self.grid_rows)):
+        for r_offset in range(visible_rows_to_render):
             row_data = self.grid_rows[r_offset]
             r_idx = start_row + r_offset
             
-            if r_idx < self.row_count:
-                base_addr = self.min_address + (r_idx * 16)
-                visual_base_addr = base_addr + self.address_base_set
-                y = self.header_height + (r_offset * self.cell_height)
-                
-                # Show/update address
+            base_addr = self.min_address + (r_idx * 16)
+            visual_base_addr = base_addr + self.address_base_set
+            y = self.header_height + (r_offset * self.cell_height)
+            
+            # Show/update address
+            if need_coords:
                 self.canvas.coords(row_data['addr_rect'], 0, y, self.addr_width, y + self.cell_height)
-                self.canvas.itemconfig(row_data['addr_rect'], fill=self.bg_color, outline=self.grid_line, state=tk.NORMAL)
-                
+            self.canvas.itemconfig(row_data['addr_rect'], fill=self.bg_color, outline=self.grid_line, state=tk.NORMAL)
+            
+            if need_coords:
                 self.canvas.coords(row_data['addr_text'], self.addr_width // 2, y + self.cell_height // 2)
-                self.canvas.itemconfig(row_data['addr_text'], text=f"0x{visual_base_addr:06X}", state=tk.NORMAL)
+            self.canvas.itemconfig(row_data['addr_text'], text=f"0x{visual_base_addr:06X}", state=tk.NORMAL)
+            
+            for c_idx in range(16):
+                curr_addr = base_addr + c_idx
+                cx = self.addr_width + (c_idx * self.cell_width)
                 
-                for c_idx in range(16):
-                    curr_addr = base_addr + c_idx
-                    cx = self.addr_width + (c_idx * self.cell_width)
-                    
-                    is_selected = (r_idx, c_idx) in self.selected_cells
-                    fill_color = self.selection_bg if is_selected else self.grid_bg
-                    text_color = self.selection_fg if is_selected else self.fg_color
-                    
-                    val = self.memory.get(curr_addr, None)
-                    val_str = f"{val:02X}" if val is not None else "--"
-                    if val is None: text_color = self.btn_bg
-                    
-                    rect_id = row_data['cell_rects'][c_idx]
-                    text_id = row_data['cell_texts'][c_idx]
-                    
+                is_selected = (r_idx, c_idx) in self.selected_cells
+                fill_color = self.selection_bg if is_selected else self.grid_bg
+                text_color = self.selection_fg if is_selected else self.fg_color
+                
+                val = self.memory.get(curr_addr, None)
+                val_str = f"{val:02X}" if val is not None else "--"
+                if val is None: text_color = self.btn_bg
+                
+                rect_id = row_data['cell_rects'][c_idx]
+                text_id = row_data['cell_texts'][c_idx]
+                
+                if need_coords:
                     self.canvas.coords(rect_id, cx, y, cx + self.cell_width, y + self.cell_height)
-                    self.canvas.itemconfig(rect_id, fill=fill_color, outline=self.grid_line, state=tk.NORMAL)
-                    
+                self.canvas.itemconfig(rect_id, fill=fill_color, outline=self.grid_line, state=tk.NORMAL)
+                
+                if need_coords:
                     self.canvas.coords(text_id, cx + self.cell_width // 2, y + self.cell_height // 2)
-                    self.canvas.itemconfig(text_id, text=val_str, fill=text_color, state=tk.NORMAL)
-            else:
-                # Hide row
-                self.canvas.itemconfig(row_data['addr_rect'], state=tk.HIDDEN)
-                self.canvas.itemconfig(row_data['addr_text'], state=tk.HIDDEN)
-                for c_idx in range(16):
-                    self.canvas.itemconfig(row_data['cell_rects'][c_idx], state=tk.HIDDEN)
-                    self.canvas.itemconfig(row_data['cell_texts'][c_idx], state=tk.HIDDEN)
+                self.canvas.itemconfig(text_id, text=val_str, fill=text_color, state=tk.NORMAL)
+
+        # Hide any rows that were previously rendered but are now outside the visible range
+        last_rendered = getattr(self, '_last_rendered_row_count', 0)
+        if last_rendered > visible_rows_to_render:
+            for r_offset in range(visible_rows_to_render, last_rendered):
+                if r_offset < len(self.grid_rows):
+                    row_data = self.grid_rows[r_offset]
+                    self.canvas.itemconfig(row_data['addr_rect'], state=tk.HIDDEN)
+                    self.canvas.itemconfig(row_data['addr_text'], state=tk.HIDDEN)
+                    for c_idx in range(16):
+                        self.canvas.itemconfig(row_data['cell_rects'][c_idx], state=tk.HIDDEN)
+                        self.canvas.itemconfig(row_data['cell_texts'][c_idx], state=tk.HIDDEN)
+        self._last_rendered_row_count = visible_rows_to_render
 
         # Redraw scrollbar
         self.sb_canvas.delete("all")
@@ -650,10 +682,91 @@ class AdvancedHexEditor:
         if max_possible < 0: max_possible = 0
         if self.top_visible_row > max_possible: self.top_visible_row = max_possible
 
+    def on_canvas_configure(self, event):
+        if not self.memory:
+            return
+        h = event.height
+        if not hasattr(self, "_last_canvas_height") or self._last_canvas_height != h:
+            self._last_canvas_height = h
+            self._coords_need_update = True
+            if hasattr(self, "_resize_after_id") and self._resize_after_id:
+                self.root.after_cancel(self._resize_after_id)
+            self._resize_after_id = self.root.after(15, self._handle_canvas_resize)
+
+    def _handle_canvas_resize(self):
+        self._resize_after_id = None
+        self.redraw_grid()
+
+    def handle_arrow_key(self, event):
+        if not self.memory:
+            return "break"
+        
+        if not hasattr(self, 'cursor_pos') or self.cursor_pos is None:
+            if self.drag_start:
+                self.cursor_pos = self.drag_start
+            elif self.selected_cells:
+                self.cursor_pos = sorted(list(self.selected_cells))[0]
+            else:
+                self.cursor_pos = (self.top_visible_row, 0)
+                
+        r, c = self.cursor_pos
+        
+        if event.keysym == "Up":
+            r -= 1
+        elif event.keysym == "Down":
+            r += 1
+        elif event.keysym == "Left":
+            c -= 1
+            if c < 0:
+                c = 15
+                r -= 1
+        elif event.keysym == "Right":
+            c += 1
+            if c > 15:
+                c = 0
+                r += 1
+                
+        if r < 0:
+            r = 0
+            c = 0
+        elif r >= self.row_count:
+            r = self.row_count - 1
+            c = 15
+            
+        self.cursor_pos = (r, c)
+        
+        shift_pressed = (event.state & 0x0001) != 0
+        
+        if shift_pressed:
+            if not self.drag_start:
+                self.drag_start = self.cursor_pos
+            r_start, c_start = self.drag_start
+            self.selected_cells.clear()
+            for row in range(min(r_start, r), max(r_start, r) + 1):
+                for col in range(min(c_start, c), max(c_start, c) + 1):
+                    self.selected_cells.add((row, col))
+        else:
+            self.drag_start = self.cursor_pos
+            self.selected_cells.clear()
+            self.selected_cells.add(self.cursor_pos)
+            
+        self.ensure_cell_visible(r, c)
+        self.redraw_grid()
+        return "break"
+
+    def ensure_cell_visible(self, r, c):
+        if r < self.top_visible_row:
+            self.top_visible_row = r
+        elif r >= self.top_visible_row + self.visible_rows_count - 2:
+            self.top_visible_row = r - self.visible_rows_count + 3
+        self.sanitize_visible_row()
+
     def on_cell_double_click(self, event):
         coords = self.get_cell_coords(event)
         if not coords: return
         r_idx, c_idx = coords
+        self.cursor_pos = coords
+        self.drag_start = coords
         addr = self.get_addr_from_coords(r_idx, c_idx)
         cx = self.addr_width + (c_idx * self.cell_width)
         cy = self.header_height + ((r_idx - self.top_visible_row) * self.cell_height)
@@ -707,6 +820,8 @@ class AdvancedHexEditor:
         try:
             self.memory = {}
             self.selected_cells.clear()
+            self.drag_start = None
+            self.cursor_pos = None
             self.undo_stack.clear() 
             self.top_visible_row = 0
             
@@ -748,7 +863,8 @@ class AdvancedHexEditor:
             self.is_modified = False 
             self.file_label.config(text=f"File: {self.current_file_name}")
             self.update_file_size_label()
-            self.redraw_grid()
+            self.redraw_grid(force_coords=True)
+            self.canvas.focus_set()
             self.status_var.set(f"Loaded ({self.current_format}): {self.current_file_name}")
         except Exception as e:
             messagebox.showerror("Error", f"Load failed:\n{str(e)}", parent=self.root)
@@ -1135,6 +1251,7 @@ class AdvancedHexEditor:
             self.selected_cells.clear()
             self.selected_cells.add(coords)
             self.drag_start = coords
+            self.cursor_pos = coords
             self.redraw_grid()
 
     def on_cell_drag(self, event):
@@ -1142,6 +1259,7 @@ class AdvancedHexEditor:
         if coords and self.drag_start:
             r_start, c_start = self.drag_start
             r_end, c_end = coords
+            self.cursor_pos = coords
             self.selected_cells.clear()
             for r in range(min(r_start, r_end), max(r_start, r_end) + 1):
                 for c in range(min(c_start, c_end), max(c_start, c_end) + 1):
@@ -1202,6 +1320,7 @@ class AdvancedHexEditor:
             self.selected_cells.clear()
             self.selected_cells.add((new_r, new_c))
             self.drag_start = (new_r, new_c)
+            self.cursor_pos = (new_r, new_c)
             
             if new_r < self.top_visible_row or new_r >= self.top_visible_row + self.visible_rows_count - 1:
                 self.top_visible_row = max(0, new_r - self.visible_rows_count // 2)
@@ -1221,8 +1340,11 @@ class AdvancedHexEditor:
             r_idx = (target_addr - self.min_address) // 16
             if 0 <= r_idx < self.row_count:
                 self.top_visible_row = r_idx
+                coords = (r_idx, target_addr % 16)
                 self.selected_cells.clear()
-                self.selected_cells.add((r_idx, target_addr % 16))
+                self.selected_cells.add(coords)
+                self.drag_start = coords
+                self.cursor_pos = coords
                 self.sanitize_visible_row()
                 self.redraw_grid()
             else:
@@ -1632,5 +1754,4 @@ if __name__ == "__main__":
         if os.path.exists(file_to_load):
             root.after(100, lambda: app.execute_load_core(file_to_load))
             
-    root.bind("<Configure>", lambda e: app.redraw_grid() if app.memory else None)
     root.mainloop()

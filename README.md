@@ -1,4 +1,4 @@
-# Meta Hex Editor (v1.2)
+# Meta Hex Editor (v1.3)
 
 [![Build and Release](https://github.com/metacity9/Metahex/actions/workflows/release.yml/badge.svg)](https://github.com/metacity9/Metahex/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -47,6 +47,8 @@
    - 데이터 범위에 대해 CRC8, CRC16, CRC32, 체크섬(Checksum) 등의 검증용 해시 값을 즉석에서 계산해 주는 도구를 제공합니다.
 7. **다양한 파일 형식 지원 및 내보내기**
    - 일반 바이너리 파일(`BIN`)은 물론, 펌웨어 개발 시 사용되는 **Intel HEX**, **Motorola S-Record (S19)**, **String HEX** 형식의 로드와 내보내기를 모두 지원합니다.
+8. **키보드 커서 탐색 및 선택 (Keyboard Navigation)**
+   - 방향키(`Up`, `Down`, `Left`, `Right`)로 셀 간 이동을 할 수 있고, `Shift + 방향키`를 조합하여 영역을 사각형으로 일괄 선택할 수 있습니다.
 
 ---
 

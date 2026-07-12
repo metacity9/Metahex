@@ -387,9 +387,9 @@ class AdvancedHexEditor:
     def update_window_title(self):
         modified_str = " *" if self.is_modified else ""
         if self.current_file_path:
-            self.root.title(f"Meta Hex Editor v1.2 - [{self.current_file_name}]{modified_str}")
+            self.root.title(f"Meta Hex Editor v1.3 - [{self.current_file_name}]{modified_str}")
         else:
-            self.root.title(f"Meta Hex Editor v1.2{modified_str}")
+            self.root.title(f"Meta Hex Editor v1.3{modified_str}")
 
     def save_to_undo_stack(self):
         snapshot = copy.deepcopy(self.memory)
@@ -1614,7 +1614,7 @@ class AdvancedHexEditor:
         lbl_title = tk.Label(dialog, text="Meta Hex Editor", bg=self.bg_color, fg=self.accent_color, font=("Segoe UI", 14, "bold"))
         lbl_title.pack(pady=(15, 5))
         
-        lbl_ver = tk.Label(dialog, text="Version 1.2", bg=self.bg_color, fg=self.fg_color, font=("Segoe UI", 10))
+        lbl_ver = tk.Label(dialog, text="Version 1.3", bg=self.bg_color, fg=self.fg_color, font=("Segoe UI", 10))
         lbl_ver.pack()
         
         lbl_dev = tk.Label(dialog, text="Developer: Metacode9", bg=self.bg_color, fg=self.fg_color, font=("Segoe UI", 10))

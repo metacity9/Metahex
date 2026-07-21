@@ -333,7 +333,7 @@ class AdvancedHexEditor:
         bottom_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
         self.status_var = tk.StringVar()
-        self.status_var.set("Ready. TLi Hex Editor initialized.")
+        self.status_var.set("Ready. Meta Hex Editor initialized.")
         status_lbl = tk.Label(bottom_bar, textvariable=self.status_var, bg=self.nav_bg, fg=self.accent_color, anchor="w", font=("Segoe UI", 9))
         status_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         
@@ -1027,7 +1027,7 @@ class AdvancedHexEditor:
         if not sorted_addresses: return
         
         with open(path, "w", encoding="utf-8") as f:
-            f.write(f"// Saved from TLi Hex Editor\n")
+            f.write(f"// Saved from Metacode9 Hex Editor\n")
             last_written_base = -1
             line_bytes = []
             

@@ -88,9 +88,13 @@ class AdvancedHexEditor:
         self.row_count = 0
         self.visible_rows_count = 25 
         
+        # Smooth Scrolling & Scrollbar State
         self.sb_dragging = False
         self.sb_drag_start_y = 0
         self.sb_drag_start_row = 0
+        self._sb_drag_after_id = None
+        self._smooth_scroll_target = None
+        self._smooth_scroll_after_id = None
         
         self.config_file = "hexeditor_config.json"
         self.addr_prefix = self.load_config_value("addr_prefix", "@")
@@ -733,14 +737,21 @@ class AdvancedHexEditor:
             visual_base_addr = base_addr + self.address_base_set
             y = self.header_height + (r_offset * self.cell_height)
             
-            # Show/update address
+            # Show/update address (diff-checked)
+            addr_str = f"0x{visual_base_addr:06X}" if visual_base_addr <= 0xFFFFFF else f"0x{visual_base_addr:08X}"
             if need_coords:
                 self.canvas.coords(row_data['addr_rect'], 0, y, self.addr_width, y + self.cell_height)
                 self.canvas.itemconfig(row_data['addr_rect'], fill=self.bg_color, outline=self.grid_line, state=tk.NORMAL)
                 self.canvas.coords(row_data['addr_text'], self.addr_width // 2, y + self.cell_height // 2)
-            self.canvas.itemconfig(row_data['addr_text'], text=f"0x{visual_base_addr:06X}", state=tk.NORMAL)
+                self.canvas.itemconfig(row_data['addr_text'], text=addr_str, state=tk.NORMAL)
+                row_data['last_addr'] = addr_str
+            elif row_data.get('last_addr') != addr_str:
+                self.canvas.itemconfig(row_data['addr_text'], text=addr_str, state=tk.NORMAL)
+                row_data['last_addr'] = addr_str
             
             sel_states = row_data.setdefault('sel_states', [False] * 16)
+            last_vals = row_data.setdefault('last_vals', [None] * 16)
+            last_colors = row_data.setdefault('last_colors', [None] * 16)
             
             for c_idx in range(16):
                 curr_addr = base_addr + c_idx
@@ -762,9 +773,13 @@ class AdvancedHexEditor:
                     sel_states[c_idx] = is_selected
                 
                 val = self.memory.get(curr_addr, None)
-                val_str = HEX_BYTE_LUT[val] if val is not None else "--"
                 text_color = self.selection_fg if is_selected else (self.fg_color if val is not None else self.btn_bg)
-                self.canvas.itemconfig(text_id, text=val_str, fill=text_color, state=tk.NORMAL)
+                
+                if need_coords or val != last_vals[c_idx] or text_color != last_colors[c_idx]:
+                    val_str = HEX_BYTE_LUT[val] if val is not None else "--"
+                    self.canvas.itemconfig(text_id, text=val_str, fill=text_color, state=tk.NORMAL)
+                    last_vals[c_idx] = val
+                    last_colors[c_idx] = text_color
 
         # Hide any rows that were previously rendered but are now outside the visible range
         last_rendered = getattr(self, '_last_rendered_row_count', 0)
@@ -804,8 +819,18 @@ class AdvancedHexEditor:
             if hasattr(self, '_sb_thumb_id') and self._sb_thumb_id:
                 self.sb_canvas.itemconfig(self._sb_thumb_id, state=tk.HIDDEN)
 
+    def cancel_smooth_scroll(self):
+        if hasattr(self, '_smooth_scroll_after_id') and self._smooth_scroll_after_id:
+            try:
+                self.root.after_cancel(self._smooth_scroll_after_id)
+            except Exception:
+                pass
+            self._smooth_scroll_after_id = None
+        self._smooth_scroll_target = None
+
     def on_sb_click(self, event):
         if not self.memory: return
+        self.cancel_smooth_scroll()
         sb_height = self.sb_canvas.winfo_height()
         if hasattr(self, '_sb_thumb_id') and self._sb_thumb_id:
             thumb_coords = self.sb_canvas.coords(self._sb_thumb_id)
@@ -824,6 +849,7 @@ class AdvancedHexEditor:
 
     def on_sb_drag(self, event):
         if not self.sb_dragging: return
+        self.cancel_smooth_scroll()
         sb_height = self.sb_canvas.winfo_height()
         delta_y = event.y - self.sb_drag_start_y
         items = self.sb_canvas.find_withtag("thumb")
@@ -832,31 +858,91 @@ class AdvancedHexEditor:
         track_space = sb_height - thumb_height
         if track_space > 0:
             row_delta = int((delta_y / track_space) * (self.row_count - self.visible_rows_count))
-            self.top_visible_row = self.sb_drag_start_row + row_delta
-            self.sanitize_visible_row()
-            self.redraw_grid()
+            new_top = self.sb_drag_start_row + row_delta
+            if new_top != self.top_visible_row:
+                self.top_visible_row = new_top
+                self.sanitize_visible_row()
+                # Throttled redraw at ~60fps
+                if hasattr(self, '_sb_drag_after_id') and self._sb_drag_after_id:
+                    return
+                self._sb_drag_after_id = self.root.after(16, self._do_sb_drag_redraw)
+
+    def _do_sb_drag_redraw(self):
+        self._sb_drag_after_id = None
+        self.redraw_grid()
 
     def on_sb_release(self, event):
         self.sb_dragging = False
+        if hasattr(self, '_sb_drag_after_id') and self._sb_drag_after_id:
+            try:
+                self.root.after_cancel(self._sb_drag_after_id)
+            except Exception:
+                pass
+            self._sb_drag_after_id = None
+        self.redraw_grid()
 
     def on_mouse_wheel(self, event):
         if not self.memory: return
-        if event.num == 4:    self.top_visible_row -= 2
-        elif event.num == 5:  self.top_visible_row += 2
+        
+        # Calculate rows to scroll based on wheel event
+        if event.num == 4:
+            delta_rows = -3
+        elif event.num == 5:
+            delta_rows = 3
         else:
-            if event.delta > 0: self.top_visible_row -= 2
-            else: self.top_visible_row += 2
-        self.sanitize_visible_row()
-        self.redraw_grid()
+            delta = event.delta
+            if delta == 0: return
+            # Windows standard delta is 120 per notch; scale proportionally with gentle acceleration
+            units = delta / 120.0
+            sign = -1 if units > 0 else 1
+            abs_units = abs(units)
+            if abs_units >= 3.0:
+                # Fast wheel rotation: accelerate movement
+                step = int(abs_units * 4.0)
+            else:
+                step = max(1, int(round(abs_units * 3.0)))
+            delta_rows = sign * step
+
+        current_target = self._smooth_scroll_target if self._smooth_scroll_target is not None else self.top_visible_row
+        target = current_target + delta_rows
+        max_possible = max(0, self.row_count - 3)
+        self._smooth_scroll_target = max(0, min(max_possible, target))
+        
+        if not hasattr(self, '_smooth_scroll_after_id') or not self._smooth_scroll_after_id:
+            self._smooth_scroll_step()
+
+    def _smooth_scroll_step(self):
+        self._smooth_scroll_after_id = None
+        if self._smooth_scroll_target is None:
+            return
+            
+        diff = self._smooth_scroll_target - self.top_visible_row
+        if abs(diff) <= 1:
+            self.top_visible_row = self._smooth_scroll_target
+            self._smooth_scroll_target = None
+            self.sanitize_visible_row()
+            self.redraw_grid()
+        else:
+            # Smooth proportional step (45% interpolation towards target)
+            step = int(diff * 0.45)
+            if step == 0:
+                step = 1 if diff > 0 else -1
+            self.top_visible_row += step
+            self.sanitize_visible_row()
+            self.redraw_grid()
+            # Next animation frame at 16ms (~60 FPS)
+            self._smooth_scroll_after_id = self.root.after(16, self._smooth_scroll_step)
 
     def action_page_up(self, event=None):
         if not self.memory: return
+        self.cancel_smooth_scroll()
         self.top_visible_row -= max(5, self.visible_rows_count - 2)
         self.sanitize_visible_row()
         self.redraw_grid()
 
     def action_page_down(self, event=None):
         if not self.memory: return
+        self.cancel_smooth_scroll()
         self.top_visible_row += max(5, self.visible_rows_count - 2)
         self.sanitize_visible_row()
         self.redraw_grid()

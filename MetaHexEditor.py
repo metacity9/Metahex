@@ -37,6 +37,9 @@ import os
 import copy
 import json
 
+# Pre-computed 256-byte Hex string lookup table (O(1) rendering cache)
+HEX_BYTE_LUT = [f"{b:02X}" for b in range(256)]
+
 class AdvancedHexEditor:
     def __init__(self, root):
         self.root = root
@@ -50,6 +53,14 @@ class AdvancedHexEditor:
         self.cursor_pos = None
         self._coords_need_update = True
         self._last_rendered_row_count = 0
+        
+        # Performance Cache (Bounds & Search)
+        self._bounds_dirty = True
+        self._cached_min_key = 0
+        self._cached_max_key = 0
+        self._cached_search_data = None
+        self._sb_track_id = None
+        self._sb_thumb_id = None
         
         # Undo/Redo 스택
         self.undo_stack = []
@@ -457,6 +468,12 @@ class AdvancedHexEditor:
         self.is_modified = False
         self.address_base_set = 0x0
         self.physical_file_size = 0
+        self._bounds_dirty = True
+        self._cached_search_data = None
+        if hasattr(self, '_sb_track_id') and self._sb_track_id:
+            self.sb_canvas.delete("all")
+            self._sb_track_id = None
+            self._sb_thumb_id = None
         self.base_entry.delete(0, tk.END)
         self.base_entry.insert(0, "0")
         self.file_label.config(text="File: No File Loaded")
@@ -465,13 +482,63 @@ class AdvancedHexEditor:
         self.update_file_size_label()
         self.redraw_grid()
 
+    def _update_memory_bounds(self):
+        if not self.memory:
+            self.min_address = 0
+            self.max_address = 0
+            self.row_count = 0
+            self._cached_min_key = 0
+            self._cached_max_key = 0
+            self._bounds_dirty = False
+            self._cached_search_data = None
+            return
+        
+        min_k = min(self.memory.keys())
+        max_k = max(self.memory.keys())
+        self._cached_min_key = min_k
+        self._cached_max_key = max_k
+        self.min_address = (min_k // 16) * 16
+        self.max_address = ((max_k // 16) + 1) * 16
+        self.row_count = (self.max_address - self.min_address) // 16
+        self._bounds_dirty = False
+        self._cached_search_data = None
+
+    def _ensure_memory_bounds(self):
+        if getattr(self, '_bounds_dirty', True):
+            self._update_memory_bounds()
+
+    def _get_searchable_bytes(self):
+        if not self.memory:
+            return None, None
+        if getattr(self, '_cached_search_data', None) is not None:
+            return self._cached_search_data
+            
+        self._ensure_memory_bounds()
+        min_k = self._cached_min_key
+        max_k = self._cached_max_key
+        span = max_k - min_k + 1
+        
+        if span <= 64 * 1024 * 1024:
+            buf = bytearray(span)
+            mem = self.memory
+            for addr, val in mem.items():
+                buf[addr - min_k] = val
+            self._cached_search_data = (bytes(buf), min_k)
+            return self._cached_search_data
+        else:
+            sorted_keys = sorted(self.memory.keys())
+            buf = bytes(self.memory[k] for k in sorted_keys)
+            self._cached_search_data = (buf, sorted_keys)
+            return self._cached_search_data
+
     def update_file_size_label(self):
         if not self.memory:
             self.size_var.set("File Size: 0 Bytes | Valid Data: 0 Bytes")
             self.update_window_title()
             return
+        self._ensure_memory_bounds()
         valid_bytes = len(self.memory)
-        memory_span = max(self.memory.keys()) - min(self.memory.keys()) + 1
+        memory_span = self._cached_max_key - self._cached_min_key + 1
         effective_file_size = max(self.physical_file_size, memory_span)
         if self.display_in_hex_unit:
             fs_str = f"0x{effective_file_size:X}"
@@ -501,6 +568,7 @@ class AdvancedHexEditor:
             return
         self.memory = self.undo_stack.pop()
         self.is_modified = True
+        self._bounds_dirty = True
         self.update_file_size_label()
         self.redraw_grid()
         self.status_var.set("Undo performed successfully.")
@@ -541,8 +609,9 @@ class AdvancedHexEditor:
             return
 
         self.save_to_undo_stack()
-        min_a = min(self.memory.keys())
-        max_a = max(self.memory.keys())
+        self._ensure_memory_bounds()
+        min_a = self._cached_min_key
+        max_a = self._cached_max_key
         
         filled_cnt = 0
         for addr in range(min_a, max_a + 1):
@@ -552,6 +621,7 @@ class AdvancedHexEditor:
                 
         if filled_cnt > 0:
             self.is_modified = True
+            self._bounds_dirty = True
             self.update_file_size_label()
             self.redraw_grid()
             self.status_var.set(f"Padding complete. Filled {filled_cnt} byte(s) with 0x{pad_byte:02X}.")
@@ -571,8 +641,9 @@ class AdvancedHexEditor:
                 deleted_count += 1
         if deleted_count > 0:
             self.is_modified = True
+            self._bounds_dirty = True
             self.update_file_size_label()
-            self.redraw_grid()
+            self.redraw_grid(force_coords=True)
             self.status_var.set(f"Deleted {deleted_count} byte(s). Data cleared to unmapped state.")
 
     def lazy_create_grid(self, needed_rows):
@@ -615,13 +686,14 @@ class AdvancedHexEditor:
                 delattr(self, 'grid_header_rect')
                 delattr(self, 'grid_rows')
             self.canvas.create_text(200, 50, text="No data loaded. Please use Loading Area.", fill=self.fg_color, font=("Consolas", 11), anchor="w")
-            self.sb_canvas.delete("all")
+            if hasattr(self, '_sb_track_id') and self._sb_track_id:
+                self.sb_canvas.delete("all")
+                self._sb_track_id = None
+                self._sb_thumb_id = None
             self._last_rendered_row_count = 0
             return
 
-        self.min_address = (min(self.memory.keys()) // 16) * 16
-        self.max_address = ((max(self.memory.keys()) // 16) + 1) * 16
-        self.row_count = (self.max_address - self.min_address) // 16
+        self._ensure_memory_bounds()
         
         canvas_height = self.canvas.winfo_height()
         if canvas_height <= 100: canvas_height = 600
@@ -652,6 +724,7 @@ class AdvancedHexEditor:
         start_row = max(0, self.top_visible_row)
         visible_rows_to_render = min(self.row_count - start_row, self.visible_rows_count)
         
+        has_sel = bool(self.selected_cells)
         for r_offset in range(visible_rows_to_render):
             row_data = self.grid_rows[r_offset]
             r_idx = start_row + r_offset
@@ -663,33 +736,34 @@ class AdvancedHexEditor:
             # Show/update address
             if need_coords:
                 self.canvas.coords(row_data['addr_rect'], 0, y, self.addr_width, y + self.cell_height)
-            self.canvas.itemconfig(row_data['addr_rect'], fill=self.bg_color, outline=self.grid_line, state=tk.NORMAL)
-            
-            if need_coords:
+                self.canvas.itemconfig(row_data['addr_rect'], fill=self.bg_color, outline=self.grid_line, state=tk.NORMAL)
                 self.canvas.coords(row_data['addr_text'], self.addr_width // 2, y + self.cell_height // 2)
             self.canvas.itemconfig(row_data['addr_text'], text=f"0x{visual_base_addr:06X}", state=tk.NORMAL)
+            
+            sel_states = row_data.setdefault('sel_states', [False] * 16)
             
             for c_idx in range(16):
                 curr_addr = base_addr + c_idx
                 cx = self.addr_width + (c_idx * self.cell_width)
                 
-                is_selected = (r_idx, c_idx) in self.selected_cells
-                fill_color = self.selection_bg if is_selected else self.grid_bg
-                text_color = self.selection_fg if is_selected else self.fg_color
-                
-                val = self.memory.get(curr_addr, None)
-                val_str = f"{val:02X}" if val is not None else "--"
-                if val is None: text_color = self.btn_bg
-                
+                is_selected = ((r_idx, c_idx) in self.selected_cells) if has_sel else False
                 rect_id = row_data['cell_rects'][c_idx]
                 text_id = row_data['cell_texts'][c_idx]
                 
                 if need_coords:
                     self.canvas.coords(rect_id, cx, y, cx + self.cell_width, y + self.cell_height)
-                self.canvas.itemconfig(rect_id, fill=fill_color, outline=self.grid_line, state=tk.NORMAL)
-                
-                if need_coords:
                     self.canvas.coords(text_id, cx + self.cell_width // 2, y + self.cell_height // 2)
+                    fill_color = self.selection_bg if is_selected else self.grid_bg
+                    self.canvas.itemconfig(rect_id, fill=fill_color, outline=self.grid_line, state=tk.NORMAL)
+                    sel_states[c_idx] = is_selected
+                elif is_selected != sel_states[c_idx]:
+                    fill_color = self.selection_bg if is_selected else self.grid_bg
+                    self.canvas.itemconfig(rect_id, fill=fill_color)
+                    sel_states[c_idx] = is_selected
+                
+                val = self.memory.get(curr_addr, None)
+                val_str = HEX_BYTE_LUT[val] if val is not None else "--"
+                text_color = self.selection_fg if is_selected else (self.fg_color if val is not None else self.btn_bg)
                 self.canvas.itemconfig(text_id, text=val_str, fill=text_color, state=tk.NORMAL)
 
         # Hide any rows that were previously rendered but are now outside the visible range
@@ -705,12 +779,17 @@ class AdvancedHexEditor:
                         self.canvas.itemconfig(row_data['cell_texts'][c_idx], state=tk.HIDDEN)
         self._last_rendered_row_count = visible_rows_to_render
 
-        # Redraw scrollbar
-        self.sb_canvas.delete("all")
+        # Redraw scrollbar (Zero-allocation coords update)
         sb_height = self.sb_canvas.winfo_height()
         if sb_height <= 0: sb_height = canvas_height
-        self.sb_canvas.create_rectangle(0, 0, 24, sb_height, fill=self.entry_bg, outline=self.bg_color)
         
+        if not hasattr(self, '_sb_track_id') or self._sb_track_id is None:
+            self._sb_track_id = self.sb_canvas.create_rectangle(0, 0, 24, sb_height, fill=self.entry_bg, outline=self.bg_color)
+            self._sb_thumb_id = self.sb_canvas.create_rectangle(2, 0, 22, 40, fill=self.btn_bg, outline="", width=1, tags="thumb")
+        else:
+            self.sb_canvas.coords(self._sb_track_id, 0, 0, 24, sb_height)
+            self.sb_canvas.itemconfig(self._sb_track_id, state=tk.NORMAL)
+
         if self.row_count > 0:
             ratio = min(1.0, self.visible_rows_count / self.row_count)
             thumb_height = int(sb_height * ratio)
@@ -719,20 +798,25 @@ class AdvancedHexEditor:
             scroll_percent = start_row / (self.row_count - self.visible_rows_count) if self.row_count > self.visible_rows_count else 0
             thumb_y1 = int(track_space * scroll_percent)
             thumb_y2 = thumb_y1 + thumb_height
-            self.sb_canvas.create_rectangle(2, thumb_y1, 22, thumb_y2, fill=self.btn_bg, outline="", width=1, tags="thumb")
+            self.sb_canvas.coords(self._sb_thumb_id, 2, thumb_y1, 22, thumb_y2)
+            self.sb_canvas.itemconfig(self._sb_thumb_id, state=tk.NORMAL)
+        else:
+            if hasattr(self, '_sb_thumb_id') and self._sb_thumb_id:
+                self.sb_canvas.itemconfig(self._sb_thumb_id, state=tk.HIDDEN)
 
     def on_sb_click(self, event):
         if not self.memory: return
         sb_height = self.sb_canvas.winfo_height()
-        items = self.sb_canvas.find_withtag("thumb")
-        if items:
-            y1 = self.sb_canvas.coords(items[0])[1]
-            y2 = self.sb_canvas.coords(items[0])[3]
-            if y1 <= event.y <= y2:
-                self.sb_dragging = True
-                self.sb_drag_start_y = event.y
-                self.sb_drag_start_row = self.top_visible_row
-                return
+        if hasattr(self, '_sb_thumb_id') and self._sb_thumb_id:
+            thumb_coords = self.sb_canvas.coords(self._sb_thumb_id)
+            if thumb_coords and len(thumb_coords) >= 4:
+                y1 = thumb_coords[1]
+                y2 = thumb_coords[3]
+                if y1 <= event.y <= y2:
+                    self.sb_dragging = True
+                    self.sb_drag_start_y = event.y
+                    self.sb_drag_start_row = self.top_visible_row
+                    return
         clicked_percent = event.y / sb_height
         self.top_visible_row = int(clicked_percent * self.row_count)
         self.sanitize_visible_row()
@@ -911,7 +995,8 @@ class AdvancedHexEditor:
                         if self.memory.get(addr) != val:
                             self.save_to_undo_stack() 
                             self.memory[addr] = val
-                            self.is_modified = True 
+                            self.is_modified = True
+                            self._bounds_dirty = True
             except ValueError: pass
             entry.destroy()
             
@@ -921,10 +1006,9 @@ class AdvancedHexEditor:
                     self.save_to_undo_stack()
                     self.memory[next_addr] = 0x00
                     self.is_modified = True
+                    self._bounds_dirty = True
                 
-                self.min_address = (min(self.memory.keys()) // 16) * 16
-                self.max_address = ((max(self.memory.keys()) // 16) + 1) * 16
-                self.row_count = (self.max_address - self.min_address) // 16
+                self._ensure_memory_bounds()
                 
                 next_r = (next_addr - self.min_address) // 16
                 next_c = (next_addr - self.min_address) % 16
@@ -1056,6 +1140,7 @@ class AdvancedHexEditor:
                 elif record_type == 4:  # Extended Linear Address
                     if len(data) >= 2:
                         extended_addr = ((data[0] << 8) | data[1]) << 16
+        self._bounds_dirty = True
 
     def load_motorola_srec(self, path):
         self.memory = {}
@@ -1100,6 +1185,7 @@ class AdvancedHexEditor:
                 data = line_bytes[1 + addr_len : -1]
                 for idx, val in enumerate(data):
                     self.memory[addr + idx] = val
+        self._bounds_dirty = True
 
     def load_string_hex(self, path):
         self.memory = {}
@@ -1152,6 +1238,7 @@ class AdvancedHexEditor:
                 elif comment_part:
                     self.comments.append({"addr": f"0x{current_offset:X}", "text": comment_part})
                     
+        self._bounds_dirty = True
         self.update_comments_list()
         if self.comments:
             if not self.is_preset_panel_visible:
@@ -1159,11 +1246,11 @@ class AdvancedHexEditor:
             self.show_comment_tab()
 
     def load_binary(self, path):
-        self.memory = {}
         with open(path, "rb") as f:
             bindata = f.read()
-        for addr, val in enumerate(bindata):
-            self.memory[addr] = val
+        self.memory = dict(enumerate(bindata))
+        self._bounds_dirty = True
+        self._cached_search_data = (bindata, 0)
 
     def action_quick_save(self):
         if not self.memory:
@@ -1195,8 +1282,9 @@ class AdvancedHexEditor:
             messagebox.showerror("Save Error", str(e), parent=self.root)
 
     def write_bin_file_physical_with_guide(self, path, include_offset=None):
-        min_addr = min(self.memory.keys())
-        max_addr = max(self.memory.keys())
+        self._ensure_memory_bounds()
+        min_addr = self._cached_min_key
+        max_addr = self._cached_max_key
         
         if include_offset is None:
             include_offset = False
@@ -1207,7 +1295,13 @@ class AdvancedHexEditor:
                 include_offset = messagebox.askyesno("Offset Option Guide", msg, parent=self.root)
             
         start_loop = 0 if include_offset else min_addr
-        out_bytes = bytearray(self.memory.get(addr, 0x00) for addr in range(start_loop, max_addr + 1))
+        size = max_addr - start_loop + 1
+        out_bytes = bytearray(size)
+        mem = self.memory
+        for addr in range(start_loop, max_addr + 1):
+            val = mem.get(addr)
+            if val:
+                out_bytes[addr - start_loop] = val
         
         with open(path, "wb") as f:
             f.write(out_bytes)
@@ -1686,12 +1780,22 @@ class AdvancedHexEditor:
             curr_fmt = opts["format"]
             prev_text.delete("1.0", tk.END)
             
-            sorted_addrs = sorted(self.memory.keys())
-            if not sorted_addrs:
+            if not self.memory:
                 prev_text.insert(tk.END, "(No memory data to preview)")
                 return
                 
-            sample_addrs = sorted_addrs[:min(len(sorted_addrs), 32)]
+            self._ensure_memory_bounds()
+            min_a = self._cached_min_key
+            max_a = self._cached_max_key
+            
+            sample_addrs = []
+            cur = min_a
+            while len(sample_addrs) < 32 and cur <= max_a:
+                if cur in self.memory:
+                    sample_addrs.append(cur)
+                cur += 1
+            if not sample_addrs:
+                sample_addrs = sorted(self.memory.keys())[:32]
             
             if curr_fmt == "string_hex":
                 preview_lines = []
@@ -1717,10 +1821,9 @@ class AdvancedHexEditor:
                 def flush_prev():
                     nonlocal tokens, comments_line
                     if not tokens: return
-                    s = dl.join(tokens)
-                    if comments_line:
-                        s += f"   {cp} " + ", ".join(comments_line)
-                    preview_lines.append(s)
+                    line_s = dl.join(tokens)
+                    if comments_line: line_s += f"   {cp} " + ", ".join(comments_line)
+                    preview_lines.append(line_s)
                     tokens = []
                     comments_line = []
 
@@ -1737,10 +1840,9 @@ class AdvancedHexEditor:
                         if ad == "every_line" and not tokens:
                             preview_lines.append(f"{ap}{a:04X}")
 
-                    ub = []
+                    ub = [self.memory.get(a + u, 0x00) for u in range(u_sz)]
                     for u in range(u_sz):
                         ta = a + u
-                        ub.append(self.memory.get(ta, 0x00))
                         if ta in c_map: comments_line.append(c_map[ta])
                     if bo == "little": ub = ub[::-1]
                     tokens.append("".join(f"{b:02X}" for b in ub))
@@ -1754,8 +1856,6 @@ class AdvancedHexEditor:
                 prev_text.insert(tk.END, "\n".join(preview_lines[:6]))
 
             elif curr_fmt == "bin":
-                min_a = min(self.memory.keys())
-                max_a = max(self.memory.keys())
                 prev_text.insert(tk.END, f"Binary Stream Output\nStart Address: 0x{min_a:X}\nEnd Address: 0x{max_a:X}\nTotal Span: {max_a - min_a + 1:,} Bytes\nOffset Mode: {opts['bin_offset']}")
                 
             elif curr_fmt == "intel_hex":
@@ -1978,9 +2078,8 @@ class AdvancedHexEditor:
                 curr_addr += 1
                 
         if self.memory:
-            self.min_address = (min(self.memory.keys()) // 16) * 16
-            self.max_address = ((max(self.memory.keys()) // 16) + 1) * 16
-            self.row_count = (self.max_address - self.min_address) // 16
+            self._bounds_dirty = True
+            self._ensure_memory_bounds()
             
             addr_offset = curr_addr - self.min_address
             new_r = addr_offset // 16
@@ -2021,25 +2120,50 @@ class AdvancedHexEditor:
 
     def action_search(self):
         query = self.search_entry.get().strip()
-        if not query: return
-        sorted_addrs = sorted(self.memory.keys())
-        try:
-            clean_query = query.replace(" ", "")
-            if all(c in "0123456789abcdefABCDEF" for c in clean_query) and len(clean_query) >= 2:
-                target_bytes = [int(clean_query[i:i+2], 16) for i in range(0, len(clean_query), 2)]
-                for i in range(len(sorted_addrs) - len(target_bytes) + 1):
-                    if [self.memory.get(sorted_addrs[i+j]) for j in range(len(target_bytes))] == target_bytes:
-                        hit_addr = sorted_addrs[i] + self.address_base_set
-                        self.goto_entry.delete(0, tk.END); self.goto_entry.insert(0, f"{hit_addr:X}")
-                        self.action_goto_address(); return
-        except Exception: pass
-        mem_string = "".join(chr(self.memory[a]) if 32 <= self.memory[a] <= 126 else "?" for a in sorted_addrs)
-        idx = mem_string.find(query)
-        if idx != -1:
-            hit_addr = sorted_addrs[idx] + self.address_base_set
-            self.goto_entry.delete(0, tk.END); self.goto_entry.insert(0, f"{hit_addr:X}")
+        if not query or not self.memory:
+            return
+            
+        search_data, index_map = self._get_searchable_bytes()
+        if not search_data:
+            messagebox.showinfo("Search", "Pattern not found.", parent=self.root)
+            return
+
+        hit_pos = -1
+        # 1. First, check if query can be interpreted as a Hex byte sequence (e.g. "00 04 32", "000432", "AA BB CC")
+        clean_hex = query.replace(" ", "").replace("0x", "").replace("0X", "")
+        if len(clean_hex) >= 2 and len(clean_hex) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in clean_hex):
+            try:
+                target_bytes = bytes.fromhex(clean_hex)
+                hit_pos = search_data.find(target_bytes)
+            except ValueError:
+                hit_pos = -1
+                
+        # 2. If not found or not hex, search as ASCII / UTF-8 text string
+        if hit_pos == -1:
+            try:
+                text_bytes = query.encode("utf-8")
+                hit_pos = search_data.find(text_bytes)
+            except Exception:
+                pass
+            if hit_pos == -1:
+                try:
+                    text_bytes = query.encode("latin-1")
+                    hit_pos = search_data.find(text_bytes)
+                except Exception:
+                    pass
+
+        if hit_pos != -1:
+            if isinstance(index_map, int):
+                hit_addr = (index_map + hit_pos) + self.address_base_set
+            else:
+                hit_addr = index_map[hit_pos] + self.address_base_set
+                
+            self.goto_entry.delete(0, tk.END)
+            self.goto_entry.insert(0, f"{hit_addr:X}")
             self.action_goto_address()
-        else: messagebox.showinfo("Search", "Pattern not found.", parent=self.root)
+            self.status_var.set(f"Search match found at 0x{hit_addr:X}")
+        else:
+            messagebox.showinfo("Search", "Pattern not found.", parent=self.root)
 
     # ==========================================
     # Data Verification (Checksum & CRC) Features
@@ -2097,9 +2221,13 @@ class AdvancedHexEditor:
     def calc_checksum_crc(self, alg, start_addr, end_addr, init_val_str):
         self._init_crc_tables()
         
-        data = bytearray()
+        size = max(0, end_addr - start_addr + 1)
+        data = bytearray(size)
+        mem = self.memory
         for addr in range(start_addr, end_addr + 1):
-            data.append(self.memory.get(addr, 0x00))
+            val = mem.get(addr)
+            if val:
+                data[addr - start_addr] = val
             
         try:
             init_val = int(init_val_str, 16)
@@ -2143,8 +2271,9 @@ class AdvancedHexEditor:
                 start_addr = min(addrs)
                 end_addr = max(addrs)
         elif self.memory:
-            start_addr = min(self.memory.keys())
-            end_addr = max(self.memory.keys())
+            self._ensure_memory_bounds()
+            start_addr = self._cached_min_key
+            end_addr = self._cached_max_key
 
         dialog = tk.Toplevel(self.root)
         dialog.title("Data Verification")

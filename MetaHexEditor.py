@@ -182,7 +182,27 @@ class AdvancedHexEditor:
         self.style.theme_use('default')
         self.style.configure(".", background=self.bg_color, foreground=self.fg_color)
         self.style.configure("TLabel", background=self.bg_color, foreground=self.fg_color, font=("Segoe UI", 10))
-        self.style.configure("TCombobox", fieldbackground=self.entry_bg, background=self.btn_bg, foreground=self.entry_fg)
+        self.style.configure("TCombobox",
+                             fieldbackground=self.entry_bg,
+                             background=self.btn_bg,
+                             foreground=self.entry_fg,
+                             arrowcolor=self.fg_color,
+                             bordercolor=self.btn_bg,
+                             darkcolor=self.btn_bg,
+                             lightcolor=self.btn_bg)
+        self.style.map("TCombobox",
+                       fieldbackground=[("readonly", self.entry_bg), ("disabled", self.panel_bg), ("focus", self.entry_bg)],
+                       foreground=[("readonly", self.entry_fg), ("disabled", "#666666"), ("focus", self.entry_fg)],
+                       selectbackground=[("readonly", self.entry_bg)],
+                       selectforeground=[("readonly", self.entry_fg)],
+                       arrowcolor=[("readonly", self.fg_color), ("disabled", "#666666")])
+
+        # Configure popup Listbox colors for ttk Comboboxes
+        self.root.option_add("*TCombobox*Listbox.background", self.entry_bg)
+        self.root.option_add("*TCombobox*Listbox.foreground", self.entry_fg)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", self.selection_bg)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", self.selection_fg)
+        self.root.option_add("*TCombobox*Listbox.font", ("Segoe UI", 9))
 
     def create_widgets(self):
 
@@ -277,15 +297,19 @@ class AdvancedHexEditor:
         self.sb_canvas = tk.Canvas(self.right_container, width=24, bg="#111214", bd=0, highlightthickness=0)
         self.sb_canvas.pack(side=tk.LEFT, fill=tk.Y)
 
-        self.preset_panel = tk.Frame(self.right_container, bg=self.panel_bg, width=260, bd=1, relief=tk.SOLID, highlightbackground=self.grid_line)
+        self.preset_panel = tk.Frame(self.right_container, bg=self.panel_bg, width=280, bd=1, relief=tk.SOLID, highlightbackground=self.grid_line)
+        self.preset_panel.pack_propagate(False)
         
-        # Panel Tab Header
+        # Panel Tab Header (Equal width tabs)
         panel_tab_frame = tk.Frame(self.preset_panel, bg=self.btn_bg)
         panel_tab_frame.pack(fill=tk.X)
+        panel_tab_frame.columnconfigure(0, weight=1, uniform="tab_btn")
+        panel_tab_frame.columnconfigure(1, weight=1, uniform="tab_btn")
+
         self.tab_preset_btn = tk.Button(panel_tab_frame, text="📌 Presets", bg=self.panel_bg, fg=self.accent_color, font=("Segoe UI", 9, "bold"), relief=tk.FLAT, bd=0, command=self.show_preset_tab)
-        self.tab_preset_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6)
+        self.tab_preset_btn.grid(row=0, column=0, sticky="nsew", ipady=6)
         self.tab_comment_btn = tk.Button(panel_tab_frame, text="💬 Comments", bg=self.btn_bg, fg=self.fg_color, font=("Segoe UI", 9, "bold"), relief=tk.FLAT, bd=0, command=self.show_comment_tab)
-        self.tab_comment_btn.pack(side=tk.RIGHT, fill=tk.X, expand=True, ipady=6)
+        self.tab_comment_btn.grid(row=0, column=1, sticky="nsew", ipady=6)
 
         # 1. Presets View
         self.preset_view = tk.Frame(self.preset_panel, bg=self.panel_bg)
@@ -396,7 +420,6 @@ class AdvancedHexEditor:
         self.status_var = tk.StringVar()
         self.status_var.set("Ready. Meta Hex Editor initialized.")
         status_lbl = tk.Label(bottom_bar, textvariable=self.status_var, bg=self.nav_bg, fg=self.accent_color, anchor="w", font=("Segoe UI", 9))
-        status_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         
         unit_toggle_btn = tk.Button(bottom_bar, text="[ Dec / Hex ]", bg=self.btn_bg, fg=self.accent_color, activebackground=self.btn_active_bg, font=("Consolas", 8, "bold"), relief=tk.FLAT, command=self.toggle_size_display_unit, padx=4, pady=0)
         unit_toggle_btn.pack(side=tk.RIGHT, padx=5)
@@ -405,6 +428,16 @@ class AdvancedHexEditor:
         self.size_var.set("File Size: 0 Bytes | Valid Data: 0 Bytes")
         size_lbl = tk.Label(bottom_bar, textvariable=self.size_var, bg=self.nav_bg, fg=self.fg_color, font=("Consolas", 9, "bold"), padx=5)
         size_lbl.pack(side=tk.RIGHT, fill=tk.Y)
+
+        tk.Label(bottom_bar, text="|", bg=self.nav_bg, fg=self.btn_bg).pack(side=tk.RIGHT, padx=3)
+
+        self.cursor_var = tk.StringVar(value="Addr: -")
+        self.cursor_lbl = tk.Label(bottom_bar, textvariable=self.cursor_var, bg=self.nav_bg, fg=self.accent_color, font=("Consolas", 9, "bold"), padx=5)
+        self.cursor_lbl.pack(side=tk.RIGHT, fill=tk.Y)
+
+        tk.Label(bottom_bar, text="|", bg=self.nav_bg, fg=self.btn_bg).pack(side=tk.RIGHT, padx=3)
+
+        status_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
 
     def toggle_size_display_unit(self):
         self.display_in_hex_unit = not self.display_in_hex_unit
@@ -427,6 +460,8 @@ class AdvancedHexEditor:
         self.base_entry.delete(0, tk.END)
         self.base_entry.insert(0, "0")
         self.file_label.config(text="File: No File Loaded")
+        if hasattr(self, 'cursor_var'):
+            self.cursor_var.set("Addr: -")
         self.update_file_size_label()
         self.redraw_grid()
 
@@ -818,6 +853,7 @@ class AdvancedHexEditor:
             
         self.ensure_cell_visible(r, c)
         self.redraw_grid()
+        self.update_cursor_status()
         return "break"
 
     def ensure_cell_visible(self, r, c):
@@ -845,6 +881,7 @@ class AdvancedHexEditor:
         self.cursor_pos = coords
         self.drag_start = coords
         self.selected_cells = {coords}
+        self.update_cursor_status()
         self.start_inline_edit(r_idx, c_idx)
 
     def start_inline_edit(self, r_idx, c_idx):
@@ -975,6 +1012,10 @@ class AdvancedHexEditor:
             self.update_file_size_label()
             self.redraw_grid(force_coords=True)
             self.canvas.focus_set()
+            if self.memory:
+                self.cursor_pos = (0, 0)
+                self.selected_cells = {(0, 0)}
+                self.update_cursor_status()
             self.status_var.set(f"Loaded ({self.current_format}): {self.current_file_name}")
         except Exception as e:
             messagebox.showerror("Error", f"Load failed:\n{str(e)}", parent=self.root)
@@ -1510,7 +1551,7 @@ class AdvancedHexEditor:
         # Bytes per Line
         tk.Label(str_frame, text="Bytes / Line:", bg=self.bg_color, fg=self.fg_color, font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", pady=3)
         bpl_var = tk.StringVar(value=str(self.export_config.get("bytes_per_line", 16)))
-        bpl_combo = ttk.Combobox(str_frame, textvariable=bpl_var, values=["1", "2", "4", "8", "16", "32"], width=12)
+        bpl_combo = ttk.Combobox(str_frame, textvariable=bpl_var, values=["1", "2", "4", "8", "16", "32"], state="readonly", width=12)
         bpl_combo.grid(row=1, column=1, sticky="w", padx=5, pady=3)
 
         # Delimiter
@@ -1836,6 +1877,36 @@ class AdvancedHexEditor:
     def get_addr_from_coords(self, r_idx, c_idx):
         return self.min_address + (r_idx * 16) + c_idx
 
+    def update_cursor_status(self):
+        if not hasattr(self, 'cursor_var'):
+            return
+        if not self.memory or not hasattr(self, 'cursor_pos') or not self.cursor_pos:
+            self.cursor_var.set("Addr: -")
+            return
+        
+        r, c = self.cursor_pos
+        raw_addr = self.get_addr_from_coords(r, c)
+        visual_addr = raw_addr + self.address_base_set
+        
+        addr_fmt = f"0x{visual_addr:06X}" if visual_addr <= 0xFFFFFF else f"0x{visual_addr:08X}"
+        raw_fmt = f"0x{raw_addr:06X}" if raw_addr <= 0xFFFFFF else f"0x{raw_addr:08X}"
+        
+        self.cursor_var.set(f"Addr: {addr_fmt}")
+        
+        val = self.memory.get(raw_addr, None)
+        if len(self.selected_cells) > 1:
+            sel_addrs = [self.get_addr_from_coords(sr, sc) + self.address_base_set for sr, sc in self.selected_cells]
+            min_a, max_a = min(sel_addrs), max(sel_addrs)
+            min_fmt = f"0x{min_a:06X}" if min_a <= 0xFFFFFF else f"0x{min_a:08X}"
+            max_fmt = f"0x{max_a:06X}" if max_a <= 0xFFFFFF else f"0x{max_a:08X}"
+            self.status_var.set(f"Cursor: {addr_fmt} | Selected: {len(self.selected_cells)} Bytes ({min_fmt} ~ {max_fmt})")
+        else:
+            if val is not None:
+                ascii_char = chr(val) if 32 <= val <= 126 else "."
+                self.status_var.set(f"Address: {addr_fmt} (Offset: {raw_fmt}) | Value: 0x{val:02X} (Dec: {val}, ASCII: '{ascii_char}')")
+            else:
+                self.status_var.set(f"Address: {addr_fmt} (Offset: {raw_fmt}) | Value: -- (Unmapped)")
+
     def on_cell_click(self, event):
         self.canvas.focus_set()
         coords = self.get_cell_coords(event)
@@ -1845,6 +1916,7 @@ class AdvancedHexEditor:
             self.drag_start = coords
             self.cursor_pos = coords
             self.redraw_grid()
+            self.update_cursor_status()
 
     def on_cell_drag(self, event):
         coords = self.get_cell_coords(event)
@@ -1857,6 +1929,7 @@ class AdvancedHexEditor:
                 for c in range(min(c_start, c_end), max(c_start, c_end) + 1):
                     self.selected_cells.add((r, c))
             self.redraw_grid()
+            self.update_cursor_status()
 
     def action_copy(self, event=None):
         focused = self.root.focus_get()
@@ -1921,6 +1994,7 @@ class AdvancedHexEditor:
 
         self.update_file_size_label()
         self.redraw_grid(force_coords=True)
+        self.update_cursor_status()
 
     def action_goto_address(self):
         addr_str = self.goto_entry.get().strip().replace("0x", "").replace("0X", "")
@@ -1940,6 +2014,7 @@ class AdvancedHexEditor:
                 self.cursor_pos = coords
                 self.sanitize_visible_row()
                 self.redraw_grid()
+                self.update_cursor_status()
             else:
                 messagebox.showwarning("Nav Error", "Address out of bounds in current map.", parent=self.root)
         except ValueError: messagebox.showerror("Error", "Invalid hex address.", parent=self.root)

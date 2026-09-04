@@ -1,0 +1,88 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Executable for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: MetaHexEditor-linux
+            executable: dist/MetaHexEditor
+          - os: windows-latest
+            asset_name: MetaHexEditor-windows.exe
+            executable: dist/MetaHexEditor.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller MetaHexEditor.spec
+
+      - name: Rename executable
+        shell: bash
+        run: |
+          mv ${{ matrix.executable }} ${{ matrix.asset_name }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Prepare Release Assets
+        run: |
+          mkdir release-assets
+          cp MetaHexEditor-linux/MetaHexEditor-linux release-assets/
+          cp MetaHexEditor-windows.exe/MetaHexEditor-windows.exe release-assets/
+          cp MetaHexEditor.py release-assets/
+          ls -la release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/MetaHexEditor-linux
+            release-assets/MetaHexEditor-windows.exe
+            release-assets/MetaHexEditor.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

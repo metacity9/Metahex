@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+
+# PyInstaller
+build/
+dist/
+local/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Local configuration files
+hexeditor_config.json
+
+# Test files
+test*.bin
+test*.hex
+test*.srec
+*.hex
+*.bin
+*.srec
